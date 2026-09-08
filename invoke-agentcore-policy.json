@@ -1,0 +1,11 @@
+{
+  "_comment": "CareConnect — inline IAM policy for the careconnect-agentcore-proxy Lambda's execution role. It lets the proxy Lambda call your deployed AgentCore runtime. In the console: Lambda > (proxy function) > Configuration > Permissions > click the execution role > Add permissions > Create inline policy > JSON tab > paste this > name it 'invoke-agentcore'. For production, replace \"*\" in Resource with your specific runtime ARN.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "bedrock-agentcore:InvokeAgentRuntime",
+      "Resource": "*"
+    }
+  ]
+}
