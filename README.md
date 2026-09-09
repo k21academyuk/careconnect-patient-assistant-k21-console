@@ -1,120 +1,220 @@
-# CareConnect — Scripts & Code (Console / CLI Build)
+# CareConnect — Patient-Support Assistant (Console / CLI Build)
 
-All the **scripts, Lambda functions, agent code, and templates** from the CareConnect
-console/CLI lab, extracted into clean, separate, well-commented files. Download this folder,
-open it in **VS Code** (or any text editor), read the comments to understand each piece, and
-copy what you need while you follow the lab guide.
+**CareConnect** is a secure, multi-agent patient-support assistant for the fictional
+**Riverside Health** hospital network, built on **Amazon Bedrock AgentCore**. It answers
+routine patient questions (visiting hours, appointment prep, prescription refills,
+insurance, billing) **only from approved hospital documents, with citations** — while
+anything clinical (dosages, diagnoses, urgent symptoms) is **never answered automatically**
+and is **escalated to a licensed clinician**. High-impact actions such as a prescription
+refill are **staged for human approval**, never auto-submitted.
 
-> **These files are for reading and copying as you work through the lab.** They are not a
-> one-click app — you build CareConnect by following the guide step by step and using these
-> files where the guide says "create this file and paste this code."
+This repository is the **Console / CLI build**: the scripts, Lambda functions, agent code,
+and templates you create by following the lab guide step by step in the AWS Console and on
+an Ubuntu EC2 dev box.
 
----
+> Companion repo (the SDK / Notebook build):
+> [`careconnect-patient-assistant-k21`](https://github.com/k21academyuk/careconnect-patient-assistant-k21).
 
-## How to read this folder (start here)
-
-1. Keep the **lab guide** open as your main instructions.
-2. When the guide says *"create `<file>.py` and paste this code"*, open the matching file
-   here, read its header + comments so you understand what it does, then copy it into place.
-3. **Fill in your own AWS values** wherever a comment tells you to. Every editable spot is
-   marked with one of these tags so they're easy to find:
-   - **`UPDATE THIS`** — a value you must change (e.g. a region or resource name)
-   - **`>>> CHANGE #`** — a numbered edit in the proxy Lambda
-   - **`>>> LEARNERS`** — a note pointing out something you set for your own account
-4. None of the example values (IDs, ARNs, URLs) will work in your account — they are
-   placeholders. Replace them with your own from the AWS Console.
+> **Scope & status.** Educational reference using **synthetic data only**. Not
+> production-ready as written — see [Limitations](#limitations).
 
 ---
 
-## What's inside
+## Architecture
+
+The complete CareConnect system — patient browser → API edge → the seven-agent AgentCore
+runtime → knowledge/AI services → tools, escalation, and cross-cutting safety/observability.
+
+![Full architecture](images/full-architecture.png)
+
+**Request flow** (blue = request in, red = clinical question escalated to a human,
+green = verified, guardrail-approved answer returning to the patient):
+
+![Animated flow](images/architecture-flow-animated.gif)
+
+---
+
+## The seven agents
+
+| Agent | Responsibility |
+|---|---|
+| **Supervisor / Orchestrator** | Plans the request, routes sub-tasks, enforces step/time budgets, verifies before replying |
+| **Safety** | Deterministic gate for clinical/urgent/manipulation intent and PII |
+| **Retrieval** | Searches the approved documents and returns passages **with citations** |
+| **Document-Processing** | Structures retrieved evidence (e.g. into checklists) without adding content |
+| **Task/Tool** | Calls synthetic hospital tools via AgentCore Gateway; **stages** actions only |
+| **Verification** | Independently checks grounding, citations, safety, and Guardrail before a reply ships |
+| **Escalation** | Creates a durable ticket and starts the human-approval workflow |
+
+**Autonomy level:** deliberately kept at **Level 1–2 (assistant / human-approved)**. The
+system informs and prepares; it does not independently execute clinical or high-impact
+actions.
+
+---
+
+## Repository layout
 
 ```
 README.md                         ← you are here
+images/                           ← full architecture, animated flow, and step 5–19 diagrams
 
 agents/                           ← the six specialist agents (run on your EC2 dev box)
-  retrieval_agent.py              answers ONLY from approved documents (uses the Knowledge Base)
-  document_processing_agent.py    structures retrieved evidence into a clean answer (adds nothing new)
-  task_tool_agent.py              calls synthetic hospital tools via the AgentCore Gateway
-  verification_agent.py           final safety reviewer: citations + safety + guardrail + grounding
-  escalation_agent.py             human hand-off: writes a DynamoDB ticket + starts Step Functions
-  supervisor_agent.py             orchestrates all of the above — RUN THIS ONE LAST
+  retrieval_agent.py
+  document_processing_agent.py
+  task_tool_agent.py
+  verification_agent.py
+  escalation_agent.py
+  supervisor_agent.py             ← run this one last (imports the others)
 
 lambda-functions/                 ← three AWS Lambda functions (create in the Lambda console)
-  careconnect-deterministic-safety/
-    lambda_function.py            rule-based safety (clinical / urgent / injection / PII masking)
-  careconnect-mock-hospital-tools/
-    lambda_function.py            synthetic appointment + refill tools (all data is fake)
+  careconnect-deterministic-safety/lambda_function.py
+  careconnect-mock-hospital-tools/lambda_function.py
   careconnect-agentcore-proxy/
-    lambda_function.py            API Gateway → AgentCore runtime proxy (with CORS)
-    invoke-agentcore-policy.json  IAM inline policy that lets the proxy call the runtime
+    lambda_function.py
+    invoke-agentcore-policy.json
 
 frontend/
-  config.js                       the ONE file you edit for the S3 + CloudFront frontend
+  config.js                       ← the one file you edit for the S3 + CloudFront frontend
 
 commands/
-  set-environment-variables.sh    exports the five values the agents need (edit with YOUR values)
-  setup-notes.md                  pip installs + deploy troubleshooting, collected in one place
+  set-environment-variables.sh    ← exports the five values the agents need (edit with YOUR values)
+  setup-notes.md                  ← pip installs + deploy troubleshooting
+
+careconnect-approved-docs/        ← the approved Riverside Health documents (the source of truth)
+careconnect-frontend-prod/        ← the built static frontend hosted on S3 + CloudFront
 ```
 
 ---
 
-## The build order (follow the lab's step numbers)
+## How to use this repo
 
-1. **Retrieval Agent** → `agents/retrieval_agent.py`
-2. **Document-Processing Agent** → `agents/document_processing_agent.py`
-3. **Deterministic Safety Lambda** → `lambda-functions/careconnect-deterministic-safety/`
-4. **Mock Hospital Tools Lambda + Gateway** → `lambda-functions/careconnect-mock-hospital-tools/` then `agents/task_tool_agent.py`
-5. **Verification Agent** → `agents/verification_agent.py`
-6. **Escalation Agent** → `agents/escalation_agent.py`
-7. **Supervisor Agent** → `agents/supervisor_agent.py`
-8. **Deploy to AgentCore Runtime**, then the **API proxy** → `lambda-functions/careconnect-agentcore-proxy/`
-9. **Frontend** → `frontend/config.js` (with S3 + CloudFront)
+1. Follow the **lab guide** as your main instructions.
+2. When the guide says *"create `<file>.py` and paste this code"*, open the matching file in
+   `agents/` or `lambda-functions/`, read its header + comments, and copy it into place.
+3. **Fill in your own AWS values** wherever a comment says so. Editable spots are tagged
+   **`UPDATE THIS`**, **`>>> CHANGE #`**, or **`>>> LEARNERS`**. Every example ID/ARN/URL is
+   a placeholder — replace it with your own from the AWS Console.
 
----
+**Build order** (matches the diagrams below):
 
-## Where you must edit — quick reference
-
-| File | What to change | Where to find your value |
+| Step | Focus | Files / services |
 |---|---|---|
-| `commands/set-environment-variables.sh` | KB ID, Gateway URL, Guardrail ID, Guardrail version, State Machine ARN | Bedrock, AgentCore, and Step Functions consoles |
-| `agents/retrieval_agent.py` | `CARECONNECT_KB_ID` (via env), `REGION` if not us-east-1 | Bedrock > Knowledge Bases |
-| `agents/task_tool_agent.py` | `CARECONNECT_GATEWAY_URL` (via env), `AWS_REGION` | Bedrock AgentCore > Gateways |
-| `agents/verification_agent.py` | `CARECONNECT_GUARDRAIL_ID` / `_VERSION` (via env); Lambda name if renamed | Bedrock > Guardrails |
-| `agents/escalation_agent.py` | `CARECONNECT_STATE_MACHINE_ARN` (via env); table name if renamed | Step Functions > State machines |
-| `lambda-functions/careconnect-agentcore-proxy/lambda_function.py` | CHANGE #1 runtime ARN, #2 region, #3 allowed origin | AgentCore > Runtimes (ARN) |
-| `frontend/config.js` | `API_URL` | API Gateway > your API > Stages > prod > Invoke URL + `/careconnect` |
+| 5 | Store approved documents | Amazon S3 (`careconnect-approved-docs/`) |
+| 6 | Knowledge Base + retrieval | Bedrock Knowledge Base, S3 Vectors, Titan Embeddings |
+| 7 | Patient Safety Guardrail | Bedrock Guardrails |
+| 8 | Deterministic safety | `lambda-functions/careconnect-deterministic-safety/` |
+| 9 | Retrieval Agent | `agents/retrieval_agent.py` |
+| 10 | Document-Processing Agent | `agents/document_processing_agent.py` |
+| 11 | Task/Tool Agent + Gateway | `lambda-functions/careconnect-mock-hospital-tools/`, `agents/task_tool_agent.py` |
+| 12 | Verification Agent | `agents/verification_agent.py` |
+| 13 | Escalation Agent | `agents/escalation_agent.py` (DynamoDB + Step Functions) |
+| 14 | Supervisor Agent | `agents/supervisor_agent.py` |
+| 15 | Deploy to AgentCore Runtime | AgentCore CLI on EC2 |
+| 16 | API Gateway endpoint | `lambda-functions/careconnect-agentcore-proxy/` |
+| 17 | Frontend (S3 + CloudFront) | `frontend/config.js`, `careconnect-frontend-prod/` |
+| 18 | Evaluate, monitor & gate | CloudWatch + AgentCore Evaluations |
 
 ---
 
-## Important things to know
+## Step-by-step diagrams
 
-- **All the agent files must live in the same folder** on your EC2 dev box, because
-  `supervisor_agent.py` imports from `retrieval_agent.py`, `task_tool_agent.py`,
-  `escalation_agent.py`, and `verification_agent.py`. If they're split across folders, the
-  imports will fail.
-- **Lambda function names matter.** Other components call them by name — for example, the
-  verification agent invokes `careconnect-deterministic-safety`. If you rename a Lambda,
-  update every reference to it (these spots are called out in the comments).
-- **All hospital data is synthetic.** The mock tools return fake data, and a staged refill is
-  never actually submitted (`submitted=False`) — that human-approval boundary is intentional.
-- **The proxy Lambda needs two extra console steps** besides pasting the code: attach the
-  `invoke-agentcore-policy.json` inline policy to its execution role, and raise its timeout to
-  5 minutes (the default 3 seconds is too short). Both are noted in the files.
-- **Placeholders, not secrets.** Example IDs/ARNs/URLs here are placeholders on purpose —
-  never commit real account IDs, resource IDs, or ARNs to a public repository.
+Each diagram shows the full architecture in faded context with **that step's components
+highlighted**, plus a zoomed-in detail panel.
+
+### Step 5 — Store Approved Documents in Amazon S3
+![Step 5](images/step-05-s3-documents.png)
+
+### Step 6 — Create the Knowledge Base with S3 Vectors
+![Step 6](images/step-06-knowledge-base.png)
+
+### Step 7 — Create the Patient Safety Guardrail
+![Step 7](images/step-07-guardrail.png)
+
+### Step 8 — Build & Test the Deterministic Safety Rules
+![Step 8](images/step-08-deterministic-safety.png)
+
+### Step 9 — Build the Retrieval Agent (Strands)
+![Step 9](images/step-09-retrieval-agent.png)
+
+### Step 10 — Build the Document-Processing Agent
+![Step 10](images/step-10-document-processing.png)
+
+### Step 11 — Build the Task/Tool Agent with AgentCore Gateway
+![Step 11](images/step-11-task-tool-gateway.png)
+
+### Step 12 — Build the Response Verification Agent
+![Step 12](images/step-12-verification-agent.png)
+
+### Step 13 — Build the Escalation Agent (DynamoDB + Step Functions)
+![Step 13](images/step-13-escalation.png)
+
+### Step 14 — Build the Supervisor Agent (Orchestration & Budgets)
+![Step 14](images/step-14-supervisor.png)
+
+### Step 15 — Deploy to Amazon Bedrock AgentCore Runtime
+![Step 15](images/step-15-deploy-runtime.png)
+
+### Step 16 — Create the API Gateway Endpoint
+![Step 16](images/step-16-api-gateway.png)
+
+### Step 17 — Build & Host the Frontend (S3 + CloudFront)
+![Step 17](images/step-17-frontend-cloudfront.png)
+
+### Step 18 — Evaluate, Monitor & Gate for Release
+![Step 18](images/step-18-evaluate-monitor-gate.png)
+
+### Step 19 — CareConnect, SDK / Notebook Edition
+![Step 19](images/step-19-sdk-notebook-edition.png)
 
 ---
 
-## Quick sanity checks
+## Safety model
 
-Confirm the Python files are readable and syntactically valid (optional, on a machine with Python):
+CareConnect uses **defense in depth** rather than trusting any single control:
 
-```bash
-python -m py_compile agents/*.py lambda-functions/*/lambda_function.py
-```
+1. **Deterministic rules** — predictable regex detection of clinical/dosage intent, urgent
+   symptoms, prompt-injection phrases, and PII.
+2. **Amazon Bedrock Guardrails** — denied topics (Diagnosis, Dosage, Treatment, Triage) plus
+   PII masking and a custom MRN regex.
+3. **Retrieved-content sanitising** — instruction-like lines stripped from documents to blunt
+   indirect prompt injection.
+4. **Independent verification** — a separate agent confirms the draft is grounded, correctly
+   cited, and free of unsupported clinical/dosing claims.
+5. **Human-in-the-loop** — clinical questions escalate; high-impact actions stage for
+   approval and are never auto-submitted.
+6. **Budgets** — the Supervisor caps steps and time to prevent loops / runaway cost.
 
-Confirm boto3 is installed on your EC2 dev box:
+---
 
-```bash
-python -c "import boto3; print('Boto3 installation successful')"
-```
+## Important notes
+
+- **All agent files must live in the same folder** (`agents/`) on your EC2 dev box —
+  `supervisor_agent.py` imports the other agents.
+- **Lambda function names matter** — components call them by name (e.g. the verifier invokes
+  `careconnect-deterministic-safety`). Rename one and you must update its references.
+- **All hospital data is synthetic.** A staged refill is never actually submitted
+  (`submitted=False`) — that human-approval boundary is intentional.
+- **The proxy Lambda needs two extra console steps**: attach `invoke-agentcore-policy.json`
+  to its execution role, and raise its timeout to 5 minutes.
+- **Placeholders, not secrets.** Never commit real account IDs, resource IDs, or ARNs.
+
+---
+
+## Limitations
+
+This is a **learning reference**, not a production system. Before handling real patients it
+would need: Infrastructure-as-Code (CDK/Terraform), real authentication (Cognito/JWT or IAM),
+least-privilege IAM (no `"Resource": "*"`), customer-managed KMS encryption, AWS WAF, a
+masked/audited logging pipeline, CI/CD with the golden-scenario evaluation as a release gate,
+real (authenticated) hospital-system integrations instead of the synthetic tools, and the
+full compliance work (signed AWS BAA, HIPAA-eligibility review, a defined clinician review
+process, and an independent security review). **No code can make the system HIPAA-compliant
+by itself.**
+
+---
+
+## Credits
+
+CareConnect scenario, safety model, and agent design based on the K21Academy
+*Production Ready — CareConnect Patient Assistant* build guide. Deployment patterns adapted
+from AWS's `amazon-bedrock-agentcore` samples. All data is synthetic.
